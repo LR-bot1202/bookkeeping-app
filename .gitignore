@@ -1,0 +1,3 @@
+# Ledger data belongs in the separate private data repository.
+data/
+*.log
