@@ -3,7 +3,7 @@
 const STORAGE_KEY = "bookkeeping.ledger.v2";
 const SYNC_KEY = "bookkeeping.github.v1";
 const LEGACY_SYNC_KEY = "bookkeeping.gitee.v1";
-const APP_VERSION = "1.3.1";
+const APP_VERSION = "1.3.2";
 const LEDGER_ID = "ledger-personal";
 const DEFAULT_MEMBER_ID = "member-self";
 const BUILTIN_UPDATED_AT = "2026-09-07T00:00:00.000Z";
@@ -876,5 +876,9 @@ window.addEventListener("appinstalled", () => {
 });
 
 state.installed = isStandalone(); loadState(); render();
-if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./sw.js").catch(() => {});
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  navigator.serviceWorker.register(`./sw.js?v=${APP_VERSION}`, { updateViaCache: "none" })
+    .then((registration) => registration.update())
+    .catch(() => {});
+}
 if (syncConfigured()) setTimeout(() => syncWithCloud({ quiet: true }), 500);
