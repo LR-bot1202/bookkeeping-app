@@ -40,7 +40,7 @@ python -m http.server 4173 --bind 127.0.0.1
 
 ## 部署
 
-仓库根目录可直接部署到 Gitee Pages 或其他静态托管平台。生产环境需使用 HTTPS，确保 Service Worker 和 PWA 安装能力正常工作。
+仓库根目录可直接部署到 GitHub Pages 或其他静态托管平台。生产环境需使用 HTTPS，确保 Service Worker 和 PWA 安装能力正常工作。
 
 ## 安装到手机
 

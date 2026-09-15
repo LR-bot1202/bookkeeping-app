@@ -2,7 +2,7 @@
 
 const STORAGE_KEY = "bookkeeping.ledger.v2";
 const SYNC_KEY = "bookkeeping.gitee.v1";
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const LEDGER_ID = "ledger-personal";
 const DEFAULT_MEMBER_ID = "member-self";
 const BUILTIN_UPDATED_AT = "2026-09-07T00:00:00.000Z";
@@ -360,7 +360,7 @@ function openInstallSheet() {
   const directInstall = !installed && Boolean(state.installPrompt);
   const body = `<div class="install-guide">
     <div class="install-app-mark"><img src="./assets/app-icon-192.png" alt="" /><span><strong>记账助手</strong><small>${installed ? "已作为独立应用运行" : "添加到桌面，像普通应用一样打开"}</small></span></div>
-    ${localAddress ? '<div class="notice">当前是电脑本地测试地址，手机无法直接访问。部署完成后，请用手机打开 Gitee Pages 地址安装。</div>' : ""}
+    ${localAddress ? '<div class="notice">当前是电脑本地测试地址，手机无法直接访问。部署完成后，请用手机打开公网 HTTPS 地址安装。</div>' : ""}
     ${installed ? '<div class="notice success">当前设备已经安装，无需重复操作。</div>' : ""}
     ${directInstall ? '<button class="button primary install-primary" type="button" data-action="request-install">安装到此设备</button>' : ""}
     <section class="install-platform"><h3>安卓手机</h3><ol><li>使用 Chrome 或 Edge 打开本页面。</li><li>${directInstall ? "点击上方“安装到此设备”。" : "打开浏览器菜单，选择“安装应用”或“添加到主屏幕”。"}</li><li>确认后，从手机桌面打开“记账助手”。</li></ol></section>
