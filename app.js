@@ -1,11 +1,15 @@
 "use strict";
 
 const STORAGE_KEY = "bookkeeping.ledger.v2";
-const SYNC_KEY = "bookkeeping.gitee.v1";
-const APP_VERSION = "1.2.1";
+const SYNC_KEY = "bookkeeping.github.v1";
+const LEGACY_SYNC_KEY = "bookkeeping.gitee.v1";
+const APP_VERSION = "1.3.0";
 const LEDGER_ID = "ledger-personal";
 const DEFAULT_MEMBER_ID = "member-self";
 const BUILTIN_UPDATED_AT = "2026-09-07T00:00:00.000Z";
+const DEFAULT_SYNC_CONFIG = Object.freeze({
+  username: "LR-bot1202", token: "", repository: "bookkeeping-data", branch: "master", path: "data/ledger.json"
+});
 
 const EXPENSE_CATEGORIES = [
   ["cat-food", "餐饮", "餐", "#e66a4e"], ["cat-transport", "交通", "行", "#3b82a0"],
@@ -126,8 +130,10 @@ function loadState() {
   try { state.data = normalizeData(JSON.parse(localStorage.getItem(STORAGE_KEY))); }
   catch { state.data = createInitialData(); }
   try {
-    state.sync = { username: "", token: "", repository: "bookkeeping-data", branch: "master", path: "data/ledger.json", ...JSON.parse(localStorage.getItem(SYNC_KEY)) };
-  } catch { state.sync = { username: "", token: "", repository: "bookkeeping-data", branch: "master", path: "data/ledger.json" }; }
+    const savedSync = JSON.parse(localStorage.getItem(SYNC_KEY));
+    state.sync = { ...DEFAULT_SYNC_CONFIG, ...(savedSync && typeof savedSync === "object" ? savedSync : {}) };
+  } catch { state.sync = { ...DEFAULT_SYNC_CONFIG }; }
+  try { localStorage.removeItem(LEGACY_SYNC_KEY); } catch { /* Storage can be unavailable in private browsing. */ }
   updateSyncLabel();
 }
 
@@ -136,10 +142,10 @@ function saveLocal({ sync = true } = {}) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
   if (sync && syncConfigured()) {
     state.syncStatus = "pending"; state.syncMessage = "等待同步"; renderSyncStatus();
-    clearTimeout(syncTimer); syncTimer = setTimeout(() => syncWithGitee({ quiet: true }), 900);
+    clearTimeout(syncTimer); syncTimer = setTimeout(() => syncWithCloud({ quiet: true }), 900);
   }
 }
-function syncConfigured() { return Boolean(state.sync.username && state.sync.token && state.sync.repository && state.sync.path); }
+function syncConfigured() { return Boolean(state.sync.username && state.sync.token && state.sync.repository && state.sync.branch && state.sync.path); }
 function isStandalone() { return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true; }
 function installDetail() {
   if (state.installed || isStandalone()) return "已安装到设备";
@@ -203,7 +209,7 @@ function renderSyncStatus() {
   const chip = document.querySelector("#sync-chip");
   if (chip) chip.innerHTML = `<span class="sync-dot ${state.syncStatus}"></span><span>${escapeHtml(state.syncMessage)}</span>`;
   const button = document.querySelector("#top-sync-button");
-  if (button) { button.disabled = !syncConfigured() || state.syncing; button.classList.toggle("spinning", state.syncing); button.title = syncConfigured() ? state.syncMessage : "请先在我的页面配置 Gitee 同步"; }
+  if (button) { button.disabled = !syncConfigured() || state.syncing; button.classList.toggle("spinning", state.syncing); button.title = syncConfigured() ? state.syncMessage : "请先在我的页面配置 GitHub 同步"; }
 }
 function render() {
   renderNavigation();
@@ -335,8 +341,8 @@ function settingsTemplate() {
       <label class="settings-item"><span class="settings-item-main"><strong>默认收入账户</strong><small>收款时优先选中</small></span><select id="default-income-account" class="settings-item-value" aria-label="默认收入账户">${accountOptions(activeAccounts, state.data.settings.default_income_account_id)}</select></label>
     </div></section>
   </div><div>
-    <section class="settings-section"><h2>同步与数据</h2><p>账目默认保存在本机；配置后自动写入你的 Gitee 私有仓库。</p><div class="settings-list">
-      ${settingsButton("configure-sync", "Gitee 私有仓库", syncDetail, ICONS.cloud, syncConfigured())}
+    <section class="settings-section"><h2>同步与数据</h2><p>账目默认保存在本机；配置后自动写入你的 GitHub 私有仓库。</p><div class="settings-list">
+      ${settingsButton("configure-sync", "GitHub 私有仓库", syncDetail, ICONS.cloud, syncConfigured())}
       ${settingsButton("install-app", "安装到手机", installDetail(), ICONS.smartphone)}
       ${settingsButton("export-csv", "导出本月 CSV", formatMonth(state.month), ICONS.download)}
       ${settingsButton("export-json", "导出 JSON 备份", `${state.data.transactions.length} 笔记录`, ICONS.download)}
@@ -365,7 +371,7 @@ function openInstallSheet() {
     ${directInstall ? '<button class="button primary install-primary" type="button" data-action="request-install">安装到此设备</button>' : ""}
     <section class="install-platform"><h3>安卓手机</h3><ol><li>使用 Chrome 或 Edge 打开本页面。</li><li>${directInstall ? "点击上方“安装到此设备”。" : "打开浏览器菜单，选择“安装应用”或“添加到主屏幕”。"}</li><li>确认后，从手机桌面打开“记账助手”。</li></ol></section>
     <section class="install-platform"><h3>iPhone</h3><ol><li>使用 Safari 打开本页面。</li><li>点击底部“分享”按钮，选择“添加到主屏幕”。</li><li>点击右上角“添加”。</li></ol></section>
-    <p class="data-note">安装版和网页使用同一份本机数据。换设备时，请在新设备重新填写 Gitee 同步配置。</p>
+    <p class="data-note">安装版和网页使用同一份本机数据。换设备时，请在新设备重新填写 GitHub 同步配置。</p>
   </div>`;
   openSheet("安装到手机", body);
 }
@@ -587,32 +593,33 @@ async function removeCategory(id) {
 }
 
 function openSyncSheet() {
-  const body = `<form id="sync-form" class="form-grid"><div class="notice">请先在 Gitee 创建一个私有仓库，并使用具有仓库读写权限的私人令牌。令牌仅保存在当前浏览器，不会写入账本文件。</div>
-    <div class="field"><label for="sync-username">Gitee 用户名</label><input id="sync-username" name="username" autocomplete="username" value="${escapeHtml(state.sync.username)}" required /></div>
-    <div class="field"><label for="sync-token">私人令牌</label><input id="sync-token" name="token" type="password" autocomplete="current-password" value="${escapeHtml(state.sync.token)}" required /></div>
+  const body = `<form id="sync-form" class="form-grid"><div class="notice">请使用仅授权该私有仓库、具有 Contents 读写权限的 GitHub fine-grained token。令牌仅保存在当前浏览器，不会写入账本文件。</div>
+    <div class="field"><label for="sync-username">GitHub 用户名</label><input id="sync-username" name="username" autocomplete="username" value="${escapeHtml(state.sync.username)}" required /></div>
+    <div class="field"><label for="sync-token">Fine-grained token</label><input id="sync-token" name="token" type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(state.sync.token)}" required /></div>
     <div class="field-inline"><div class="field"><label for="sync-repository">私有仓库名</label><input id="sync-repository" name="repository" value="${escapeHtml(state.sync.repository)}" required /></div><div class="field"><label for="sync-branch">分支</label><input id="sync-branch" name="branch" value="${escapeHtml(state.sync.branch)}" required /></div></div>
-    <div class="field"><label for="sync-path">数据文件路径</label><input id="sync-path" name="path" value="${escapeHtml(state.sync.path)}" required /><small>例如 data/ledger.json，目录会由 Gitee API 自动创建。</small></div>
+    <div class="field"><label for="sync-path">数据文件路径</label><input id="sync-path" name="path" value="${escapeHtml(state.sync.path)}" required /><small>例如 data/ledger.json，目录会由 GitHub API 自动创建。</small></div>
     ${syncConfigured() ? '<button class="button danger" type="button" data-action="disable-sync">停用云同步并移除本机令牌</button>' : ""}
   </form>`;
-  openSheet("Gitee 同步", body, '<button class="action-button primary" type="submit" form="sync-form">保存并同步</button>');
+  openSheet("GitHub 同步", body, '<button class="action-button primary" type="submit" form="sync-form">保存并同步</button>');
   document.querySelector("#sync-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const form = event.currentTarget;
     state.sync = { username: form.elements.username.value.trim(), token: form.elements.token.value.trim(), repository: form.elements.repository.value.trim(), branch: form.elements.branch.value.trim(), path: form.elements.path.value.trim().replace(/^\/+/, "") };
     localStorage.setItem(SYNC_KEY, JSON.stringify(state.sync)); closeSheet(); render();
-    await syncWithGitee();
+    await syncWithCloud();
   });
 }
 
 async function disableSync() {
-  if (!await confirmDialog("停用 Gitee 同步？", "本机账本数据会保留，仅移除当前浏览器中的同步配置和令牌。", "停用")) return;
-  localStorage.removeItem(SYNC_KEY); state.sync = { username: "", token: "", repository: "bookkeeping-data", branch: "master", path: "data/ledger.json" };
+  if (!await confirmDialog("停用 GitHub 同步？", "本机账本数据会保留，仅移除当前浏览器中的同步配置和令牌。", "停用")) return;
+  localStorage.removeItem(SYNC_KEY); state.sync = { ...DEFAULT_SYNC_CONFIG };
   updateSyncLabel(); closeSheet(); render(); toast("已停用云同步");
 }
 
-function giteeUrl() {
-  const owner = encodeURIComponent(state.sync.username); const repo = encodeURIComponent(state.sync.repository);
-  const path = state.sync.path.split("/").map(encodeURIComponent).join("/");
-  return `https://gitee.com/api/v5/repos/${owner}/${repo}/contents/${path}`;
+function githubContentUrl(config = state.sync, includeRef = false) {
+  const owner = encodeURIComponent(config.username); const repo = encodeURIComponent(config.repository);
+  const path = config.path.split("/").map(encodeURIComponent).join("/");
+  const url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
+  return includeRef ? url + "?ref=" + encodeURIComponent(config.branch) : url;
 }
 function encodeBase64Utf8(value) {
   const bytes = new TextEncoder().encode(value); let binary = "";
@@ -623,15 +630,32 @@ function decodeBase64Utf8(value) {
   const binary = atob(value.replace(/\s/g, "")); const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0)); return new TextDecoder().decode(bytes);
 }
 
-async function giteeRequest(method, body = null) {
-  const options = { method, headers: { Accept: "application/json", "Content-Type": "application/json" } };
-  if (body) options.body = JSON.stringify({ access_token: state.sync.token, ...body });
-  const separator = giteeUrl().includes("?") ? "&" : "?";
-  const url = method === "GET" ? `${giteeUrl()}${separator}access_token=${encodeURIComponent(state.sync.token)}&ref=${encodeURIComponent(state.sync.branch)}` : giteeUrl();
-  const response = await fetch(url, options);
+function githubRequestOptions(method, token, body = null) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: "Bearer " + token,
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  const options = { method, headers };
+  if (body) { headers["Content-Type"] = "application/json"; options.body = JSON.stringify(body); }
+  return options;
+}
+
+async function repositoryRequest(method, body = null) {
+  const response = await fetch(
+    githubContentUrl(state.sync, method === "GET"),
+    githubRequestOptions(method, state.sync.token, body)
+  );
   if (method === "GET" && response.status === 404) return { missing: true };
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || payload.error || `Gitee 请求失败 (${response.status})`);
+  if (!response.ok) {
+    let message = payload.message || payload.error || "GitHub 请求失败";
+    if (response.status === 401) message = "GitHub 令牌无效或已过期";
+    if (response.status === 403) message = "GitHub 令牌没有仓库 Contents 读写权限，或 API 请求受限";
+    const error = new Error(message + " (" + response.status + ")");
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -676,35 +700,35 @@ function mergeLedger(local, remote) {
   merged.updated_at = nowIso(); return normalizeData(merged);
 }
 
-async function syncWithGitee({ quiet = false, retry = true } = {}) {
+async function syncWithCloud({ quiet = false, retry = true } = {}) {
   if (!syncConfigured() || state.syncing || !navigator.onLine) {
     if (!navigator.onLine && syncConfigured()) { state.syncStatus = "pending"; state.syncMessage = "离线，等待同步"; renderSyncStatus(); }
     return;
   }
   state.syncing = true; state.syncStatus = "pending"; state.syncMessage = "正在同步"; renderSyncStatus();
   try {
-    const remoteFile = await giteeRequest("GET"); let sha = null;
+    const remoteFile = await repositoryRequest("GET"); let sha = null;
     if (!remoteFile.missing) {
       sha = remoteFile.sha;
       const remoteText = decodeBase64Utf8(remoteFile.content).trim();
       if (remoteText) {
         let remote;
         try { remote = JSON.parse(remoteText); }
-        catch { throw new Error("Gitee 数据文件不是有效的 JSON，请清空文件后重试"); }
+        catch { throw new Error("GitHub 数据文件不是有效的 JSON，请清空文件后重试"); }
         if (!remote || !Array.isArray(remote.transactions) || !Array.isArray(remote.categories) || !Array.isArray(remote.accounts)) {
-          throw new Error("Gitee 数据文件不是记账助手账本，请清空文件后重试");
+          throw new Error("GitHub 数据文件不是记账助手账本，请清空文件后重试");
         }
         state.data = mergeLedger(state.data, normalizeData(remote)); saveLocal({ sync: false }); render();
       }
     }
     const body = { message: `同步账本 ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`, content: encodeBase64Utf8(JSON.stringify(state.data, null, 2)), branch: state.sync.branch };
     if (sha) body.sha = sha;
-    await giteeRequest(sha ? "PUT" : "POST", body);
+    await repositoryRequest("PUT", body);
     state.syncStatus = "ok"; state.syncMessage = `已同步 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
-    if (!quiet) toast("Gitee 同步完成");
+    if (!quiet) toast("GitHub 同步完成");
   } catch (error) {
-    if (retry && /409|conflict|sha/i.test(error.message)) {
-      state.syncing = false; return syncWithGitee({ quiet, retry: false });
+    if (retry && (error.status === 409 || /conflict|sha/i.test(error.message))) {
+      state.syncing = false; return syncWithCloud({ quiet, retry: false });
     }
     state.syncStatus = "error"; state.syncMessage = "同步失败";
     if (!quiet) toast(error.message || "同步失败，请检查配置和网络", "error");
@@ -819,9 +843,9 @@ document.addEventListener("input", (event) => {
   clearTimeout(event.target.filterTimer); event.target.filterTimer = setTimeout(render, 180);
 });
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheet(); });
-document.querySelector("#top-sync-button").addEventListener("click", () => syncWithGitee());
-window.addEventListener("online", () => syncWithGitee({ quiet: true }));
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") syncWithGitee({ quiet: true }); });
+document.querySelector("#top-sync-button").addEventListener("click", () => syncWithCloud());
+window.addEventListener("online", () => syncWithCloud({ quiet: true }));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") syncWithCloud({ quiet: true }); });
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault(); state.installPrompt = event;
   if (state.page === "settings") render();
@@ -832,4 +856,4 @@ window.addEventListener("appinstalled", () => {
 
 state.installed = isStandalone(); loadState(); render();
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./sw.js").catch(() => {});
-if (syncConfigured()) setTimeout(() => syncWithGitee({ quiet: true }), 500);
+if (syncConfigured()) setTimeout(() => syncWithCloud({ quiet: true }), 500);

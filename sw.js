@@ -1,4 +1,4 @@
-const CACHE_NAME = "bookkeeping-v9";
+const CACHE_NAME = "bookkeeping-v10";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest", "./assets/app-icon.svg", "./assets/app-icon-192.png", "./assets/app-icon-512.png"];
 
 self.addEventListener("install", (event) => {
