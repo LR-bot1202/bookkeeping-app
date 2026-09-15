@@ -3,7 +3,7 @@
 const STORAGE_KEY = "bookkeeping.ledger.v2";
 const SYNC_KEY = "bookkeeping.github.v1";
 const LEGACY_SYNC_KEY = "bookkeeping.gitee.v1";
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.3.1";
 const LEDGER_ID = "ledger-personal";
 const DEFAULT_MEMBER_ID = "member-self";
 const BUILTIN_UPDATED_AT = "2026-09-07T00:00:00.000Z";
@@ -65,6 +65,7 @@ const state = {
   syncing: false, syncStatus: "local", syncMessage: "仅保存在本机"
 };
 let syncTimer = null;
+let githubReadSequence = 0;
 
 function nowIso() { return new Date().toISOString(); }
 function shanghaiParts(date = new Date()) {
@@ -615,11 +616,13 @@ async function disableSync() {
   updateSyncLabel(); closeSheet(); render(); toast("已停用云同步");
 }
 
-function githubContentUrl(config = state.sync, includeRef = false) {
+function githubContentUrl(config = state.sync, includeRef = false, cacheBust = "") {
   const owner = encodeURIComponent(config.username); const repo = encodeURIComponent(config.repository);
   const path = config.path.split("/").map(encodeURIComponent).join("/");
   const url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
-  return includeRef ? url + "?ref=" + encodeURIComponent(config.branch) : url;
+  if (!includeRef) return url;
+  const query = "ref=" + encodeURIComponent(config.branch);
+  return url + "?" + query + (cacheBust ? "&_=" + encodeURIComponent(cacheBust) : "");
 }
 function encodeBase64Utf8(value) {
   const bytes = new TextEncoder().encode(value); let binary = "";
@@ -642,9 +645,13 @@ function githubRequestOptions(method, token, body = null) {
 }
 
 async function repositoryRequest(method, body = null) {
+  const isRead = method === "GET";
+  const cacheBust = isRead ? `${Date.now()}-${++githubReadSequence}` : "";
+  const options = githubRequestOptions(method, state.sync.token, body);
+  if (isRead) options.cache = "no-store";
   const response = await fetch(
-    githubContentUrl(state.sync, method === "GET"),
-    githubRequestOptions(method, state.sync.token, body)
+    githubContentUrl(state.sync, isRead, cacheBust),
+    options
   );
   if (method === "GET" && response.status === 404) return { missing: true };
   const payload = await response.json().catch(() => ({}));
@@ -700,36 +707,50 @@ function mergeLedger(local, remote) {
   merged.updated_at = nowIso(); return normalizeData(merged);
 }
 
-async function syncWithCloud({ quiet = false, retry = true } = {}) {
+function isGitHubConflict(error) {
+  return error?.status === 409 || /conflict|sha|does not match/i.test(error?.message || "");
+}
+
+async function syncWithCloud({ quiet = false } = {}) {
   if (!syncConfigured() || state.syncing || !navigator.onLine) {
     if (!navigator.onLine && syncConfigured()) { state.syncStatus = "pending"; state.syncMessage = "离线，等待同步"; renderSyncStatus(); }
     return;
   }
   state.syncing = true; state.syncStatus = "pending"; state.syncMessage = "正在同步"; renderSyncStatus();
   try {
-    const remoteFile = await repositoryRequest("GET"); let sha = null;
-    if (!remoteFile.missing) {
-      sha = remoteFile.sha;
-      const remoteText = decodeBase64Utf8(remoteFile.content).trim();
-      if (remoteText) {
-        let remote;
-        try { remote = JSON.parse(remoteText); }
-        catch { throw new Error("GitHub 数据文件不是有效的 JSON，请清空文件后重试"); }
-        if (!remote || !Array.isArray(remote.transactions) || !Array.isArray(remote.categories) || !Array.isArray(remote.accounts)) {
-          throw new Error("GitHub 数据文件不是记账助手账本，请清空文件后重试");
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const remoteFile = await repositoryRequest("GET"); let sha = null;
+        if (!remoteFile.missing) {
+          sha = remoteFile.sha;
+          const remoteText = decodeBase64Utf8(remoteFile.content).trim();
+          if (remoteText) {
+            let remote;
+            try { remote = JSON.parse(remoteText); }
+            catch { throw new Error("GitHub 数据文件不是有效的 JSON，请清空文件后重试"); }
+            if (!remote || !Array.isArray(remote.transactions) || !Array.isArray(remote.categories) || !Array.isArray(remote.accounts)) {
+              throw new Error("GitHub 数据文件不是记账助手账本，请清空文件后重试");
+            }
+            state.data = mergeLedger(state.data, normalizeData(remote)); saveLocal({ sync: false }); render();
+          }
         }
-        state.data = mergeLedger(state.data, normalizeData(remote)); saveLocal({ sync: false }); render();
+        const body = { message: `同步账本 ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`, content: encodeBase64Utf8(JSON.stringify(state.data, null, 2)), branch: state.sync.branch };
+        if (sha) body.sha = sha;
+        await repositoryRequest("PUT", body);
+        break;
+      } catch (error) {
+        if (!isGitHubConflict(error)) throw error;
+        if (attempt === maxAttempts) {
+          const conflictError = new Error("远端账本正在被其他设备更新，请稍后再点同步");
+          conflictError.status = 409;
+          throw conflictError;
+        }
       }
     }
-    const body = { message: `同步账本 ${new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}`, content: encodeBase64Utf8(JSON.stringify(state.data, null, 2)), branch: state.sync.branch };
-    if (sha) body.sha = sha;
-    await repositoryRequest("PUT", body);
     state.syncStatus = "ok"; state.syncMessage = `已同步 ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
     if (!quiet) toast("GitHub 同步完成");
   } catch (error) {
-    if (retry && (error.status === 409 || /conflict|sha/i.test(error.message))) {
-      state.syncing = false; return syncWithCloud({ quiet, retry: false });
-    }
     state.syncStatus = "error"; state.syncMessage = "同步失败";
     if (!quiet) toast(error.message || "同步失败，请检查配置和网络", "error");
   } finally { state.syncing = false; renderSyncStatus(); }
